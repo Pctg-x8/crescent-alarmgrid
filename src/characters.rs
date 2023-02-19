@@ -30,7 +30,12 @@ impl SlackDummyUser for Koyuki {
 }
 impl SerifGenerator for Koyuki {
     fn generate_message(&self, rng: &mut impl rand::Rng) -> String {
-        let firstline = "**crescentサーバのメモリ使用率が高くなっているよ！**";
+        let firstline = format!(
+            "**{}crescentサーバのメモリ使用率が高くなっているよ！**",
+            ["", "大変！", "たいへん！"]
+                .choose_weighted(rng, |x| if x.is_empty() { 2 } else { 1 })
+                .unwrap()
+        );
         let secondline = match [1, 2, 3].choose(rng).expect("no candidates choosen?") {
             1 => format!("そろそろ再起動した方がいいかも{}", dotted_leaders(rng)),
             2 => format!(
@@ -50,7 +55,7 @@ impl SerifGenerator for Koyuki {
         };
 
         let mut concatenated = String::with_capacity(firstline.len() + secondline.len() + 1);
-        concatenated.push_str(firstline);
+        concatenated.extend(firstline.chars());
         concatenated.push('\n');
         concatenated.extend(secondline.chars());
 
