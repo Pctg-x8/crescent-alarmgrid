@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-async-slack-web-api = { git = "https://github.com/Pctg-x8/async-slack-web-api", version = "0.1.0", features = ["rustls"] }
+async-slack-web-api = { git = "https://github.com/Pctg-x8/async-slack-web-api", version = "0.1.0", default-features = false, features = ["rustls"] }
 aws_lambda_events = "0.7.3"
 lambda_runtime = "0.7.3"
 rand = "0.8.5"
