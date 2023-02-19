@@ -1,0 +1,8 @@
+/target
+.env
+
+# terraform
+/.terraform
+*.tfstate
+*.tfstate.backup
+*.hcl
