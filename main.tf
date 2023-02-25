@@ -13,6 +13,10 @@ data "aws_sns_topic" "memory_pressure_alarm" {
 resource "aws_sqs_queue" "memory_pressure_alarm" {
   name = "CrescentHighMemoryPressureAlarm"
 }
+resource "aws_sqs_queue_policy" "memory_pressure_alarm" {
+  queue_url = aws_sqs_queue.memory_pressure_alarm.id
+  policy    = data.aws_iam_policy_document.queue_subscription_policy.json
+}
 
 resource "aws_sns_topic_subscription" "memory_pressure_alarm_queueing" {
   topic_arn = data.aws_sns_topic.memory_pressure_alarm.arn

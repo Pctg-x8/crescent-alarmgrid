@@ -48,3 +48,15 @@ data "aws_iam_policy_document" "queue_management_policy" {
     resources = [aws_sqs_queue.memory_pressure_alarm.arn]
   }
 }
+
+data "aws_iam_policy_document" "queue_subscription_policy" {
+  statement {
+    effect  = "Allow"
+    actions = ["sqs:SendMessage", "sqs:SendMessageBatch"]
+    principals {
+      type        = "Service"
+      identifiers = ["sns.amazonaws.com"]
+    }
+    resources = [aws_sqs_queue.memory_pressure_alarm.arn]
+  }
+}
