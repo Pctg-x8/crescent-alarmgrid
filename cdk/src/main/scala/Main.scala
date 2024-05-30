@@ -1,5 +1,6 @@
 import io.ct2.cdkhelper.buildArn
 import io.ct2.cdkhelper.synthesize
+import scala.annotation.threadUnsafe
 import scala.jdk.CollectionConverters.given
 import software.amazon.awscdk.ArnFormat
 import software.amazon.awscdk.Duration
@@ -29,55 +30,13 @@ import software.amazon.awscdk.services.sns.subscriptions.SqsSubscription
 import software.amazon.awscdk.services.sqs
 import software.constructs.Construct
 
+final val ServerInstanceID = "i-0195ecc0d1e95f81e"
+final val ServerImageID = "ami-0dee43a4abd99c264"
+final val ServerInstanceType = "t4g.small"
+
 @main def main(): Unit = synthesize {
   AlarmStack()
 }
-
-final class MemoryPressureAlarmResources(id: String = "Crescent-Alarmgrid-MemoryPressureResources")(using
-    scope: Construct
-) extends NestedStack(scope, id):
-  val topic = sns.Topic.Builder.create(this, "topic").displayName("CrescentHighMemoryPressureAlarm").build()
-  val queue = sqs.Queue.Builder.create(this, "queue").queueName("CrescentHighMemoryPressureAlarm").build()
-  for mailTo <- sys.env get "ALARMGRID_MEMPRESSURE_MAILTO" do topic addSubscription EmailSubscription(mailTo)
-  topic addSubscription SqsSubscription(queue)
-
-  val physicalMemoryAlarm = Metric(
-    namespace = "CWAgent",
-    dimensionsMap = Map("InstanceId" -> "i-0195ecc0d1e95f81e"),
-    metricName = "mem_used_percent",
-    period = Duration minutes 5,
-    statistic = "avg",
-  )
-    .createAlarm(
-      "physicalMemoryAlarm",
-      threshold = 85,
-      comparisonOperator = ComparisonOperator.GREATER_THAN_THRESHOLD,
-      evaluationPeriods = 1,
-      alarmName = Some("CrescentServer-HighPhysicalMemoryPressure"),
-    )
-  val swapMemoryAlarm = Metric(
-    namespace = "CWAgent",
-    dimensionsMap = Map("InstanceId" -> "i-0195ecc0d1e95f81e"),
-    metricName = "swap_used_percent",
-    period = Duration minutes 5,
-    statistic = "avg",
-  ).createAlarm(
-    "swapMemoryAlarm",
-    threshold = 80,
-    comparisonOperator = ComparisonOperator.GREATER_THAN_THRESHOLD,
-    evaluationPeriods = 1,
-    alarmName = Some("CrescentServer-HighSwapMemoryPressure"),
-  )
-  val memoryAlarm = CompositeAlarm.Builder
-    .create(this, "memoryAlarm")
-    .alarmRule(AlarmRule.allOf(physicalMemoryAlarm, swapMemoryAlarm))
-    .compositeAlarmName("CrescentServer-HighMemoryPressure")
-    .build()
-  memoryAlarm addAlarmAction SnsAction(topic)
-
-  def bindReceiverFunction(fn: lambda.IFunction): Unit =
-    fn addEventSource SqsEventSource(this.queue)
-    this.queue grantConsumeMessages fn
 
 final class AlarmStack(id: String = "Crescent-Alarmgrid")(using
     scope: Construct
@@ -85,44 +44,91 @@ final class AlarmStack(id: String = "Crescent-Alarmgrid")(using
   given Stack = Stack of this
   given Construct = this
 
+  val queue = sqs.Queue.Builder.create(this, "queue").queueName("Crescent-Alarmgrid").build()
   val receiverFunction = lambda.Function.Builder
     .create(this, "function")
     .functionName("CrescentServerAlarmReceiver")
     .code(lambda.Code fromAsset "../target/lambda/crescent-alarmgrid/bootstrap.zip")
     .handler("hello.handler")
     .runtime(lambda.Runtime.PROVIDED_AL2)
-    .logRetention(logs.RetentionDays.ONE_DAY)
+    .build()
+  receiverFunction addEventSource SqsEventSource(queue)
+  queue grantConsumeMessages receiverFunction
+
+  val receiverFunctionLogGroup = logs.LogGroup.Builder
+    .create(this, "functionLogGroup")
+    .retention(logs.RetentionDays.ONE_DAY)
+    .logGroupName(s"/aws/lambda/${receiverFunction.getFunctionName()}")
     .build()
 
-  MemoryPressureAlarmResources() bindReceiverFunction receiverFunction
+  MemoryPressureAlarmResources() subscribeTo queue
+  HighStorageUsageAlarmResources() subscribeTo queue
+  LowCPUCreditBalanceAlarmResources() subscribeTo queue
 
-final class Metric(
-    val namespace: String,
-    val dimensionsMap: Map[String, String] = Map(),
-    val metricName: String,
-    val period: Duration,
-    val statistic: String,
-):
-  val builder = software.amazon.awscdk.services.cloudwatch.Metric.Builder.create()
-  builder
-    .namespace(namespace)
-    .dimensionsMap(dimensionsMap.asJava)
-    .metricName(metricName)
-    .period(period)
-    .statistic(statistic)
-  val obj = builder.build()
+final class MemoryPressureAlarmResources(id: String = "Crescent-Alarmgrid-MemoryPressureResources")(using
+    scope: Construct
+) extends NestedStack(scope, id):
+  val topic =
+    sns.Topic.Builder.create(this, "memoryPressure-topic").displayName("Crescent-HighMemoryPressureAlarm").build()
+  for mailTo <- sys.env get "ALARMGRID_MAILTO" do topic addSubscription EmailSubscription(mailTo)
 
-  def createAlarm(
-      id: String,
-      threshold: Int,
-      comparisonOperator: ComparisonOperator,
-      evaluationPeriods: Int,
-      alarmName: Option[String] = None,
-  )(using scope: Construct): Alarm =
-    val optionsBuilder = CreateAlarmOptions
-      .builder()
-      .threshold(threshold)
-      .comparisonOperator(comparisonOperator)
-      .evaluationPeriods(evaluationPeriods)
-    for x <- alarmName do optionsBuilder.alarmName(x)
-    this.obj.createAlarm(scope, id, optionsBuilder.build())
+  val physicalMemoryAlarm = MetricNamespace.CWAgent
+    .instance(ServerInstanceID)
+    .memUsedPercent(MetricStatistic.Avg(Duration minutes 5))
+    .alarmOn(AlarmCondition.GreaterThan(85))(
+      "memoryPressure-physicalMemoryAlarm",
+      displayName = Some("CrescentServer-HighPhysicalMemoryPressure"),
+    )
+  val swapMemoryAlarm = MetricNamespace.CWAgent
+    .instance(ServerInstanceID)
+    .swapUsedPercent(MetricStatistic.Avg(Duration minutes 5))
+    .alarmOn(AlarmCondition.GreaterThan(80))(
+      "memoryPressure-swapMemoryAlarm",
+      displayName = Some("CrescentServer-HighSwapMemoryPressure"),
+    )
+  val memoryAlarm = CompositeAlarm.Builder
+    .create(this, "memoryPressure-alarm")
+    .alarmRule(AlarmRule.allOf(physicalMemoryAlarm, swapMemoryAlarm))
+    .compositeAlarmName("CrescentServer-HighMemoryPressure")
+    .build()
+  memoryAlarm addAlarmAction SnsAction(topic)
+
+  def subscribeTo(queue: sqs.Queue) = topic addSubscription SqsSubscription(queue)
+
+final class HighStorageUsageAlarmResources(id: String = "Crescent-Alarmgrid-HighStorageUsageResources")(using
+    scope: Construct
+) extends NestedStack(scope, id):
+  val topic =
+    sns.Topic.Builder.create(this, "highStorageUsage-topic").displayName("Crescent-HighStorageUsageAlarm").build()
+  for mailTo <- sys.env get "ALARMGRID_MAILTO" do topic addSubscription EmailSubscription(mailTo)
+
+  val alarm = MetricNamespace.CWAgent
+    .instance(ServerInstanceID)
+    .detailed(ServerImageID, ServerInstanceType)
+    .mountPoint("nvme0n1p1", "xfs", "/")
+    .diskUsedPercent(MetricStatistic.Max(Duration minutes 5))
+    .alarmOn(AlarmCondition.GreaterThan(85))(
+      "highStorageUsage-alarm",
+      displayName = Some("CrescentServer-HighStorageUsage"),
+    )
+  alarm addAlarmAction SnsAction(topic)
+
+  def subscribeTo(queue: sqs.Queue) = topic addSubscription SqsSubscription(queue)
+
+final class LowCPUCreditBalanceAlarmResources(id: String = "Crescent-Alarmgrid-LowCPUCreditBalanceResources")(using
+    scope: Construct
+) extends NestedStack(scope, id):
+  val topic =
+    sns.Topic.Builder.create(this, "lowCPUCreditBalance-topic").displayName("Crescent-LowCPUCreditBalanceAlarm").build()
+  for mailTo <- sys.env get "ALARMGRID_MAILTO" do topic addSubscription EmailSubscription(mailTo)
+
+  val alarm = MetricNamespace.AWSEC2
+    .instance(ServerInstanceID)
+    .cpuCreditBalance(MetricStatistic.Avg(Duration minutes 5))
+    .alarmOn(AlarmCondition.LessThan(100))(
+      "lowCPUCreditBalance-alarm",
+      displayName = Some("CrescentServer-LowCPUCreditBalance"),
+    )
+  alarm addAlarmAction SnsAction(topic)
+
+  def subscribeTo(queue: sqs.Queue) = topic addSubscription SqsSubscription(queue)
